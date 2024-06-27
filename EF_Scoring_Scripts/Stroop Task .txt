@@ -1,0 +1,20 @@
+Stroop Task 
+
+Suggested variables
+
+Reaction Time (RT) congruent Trails 
+Captures: Processing speed under conditions with minimal cognitive conflict. Automatic processing of Reading in conditions of less cognitive effort  
+
+Reaction Time (RT) incongruent Trails 
+Captures: Ability to inhibit habitual responses (automatic responses in conditions of cognitive conflicts). Also measures cognitive flexibility (switching between conflicting info and responding correctly) in addition to selective attention (focusing on the relevant stimuli (ink color) rather than the Word meaning). 
+
+Stroop Interference Score (Diff between RT_incongruent / RT_congruent) 
+An overall score that best assesses efficiency of inhibitory Control. Assesses the ability to monitor and resolve conflict between competing cognitive processes. 
+
+Error Rate Congruent Trails (%-wise errors in congruent trails) 
+Basic processing ability, a worse measurement to reaction time congruent 
+
+
+Error Rate Incongruent Trails 
+Basic processing ability, a worse measurement to reaction time incongruent
+

@@ -1,0 +1,270 @@
+---
+title: "Color Word Outcome Variables - Report"
+author: "Hampus Lennaárd - Data Scientist @ Cohr Group"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(jsonlite)
+library(purrr)
+library(papaja)
+library(knitr)
+options(digits = 3)
+```
+
+```{r load-data, echo=FALSE, warning=FALSE, message=FALSE}
+color_word_data_unclean <- read.csv("raw_color_data.csv")
+
+total_sample_size <- length(unique(color_word_data_unclean$test_taker_id))
+```
+
+### Overview of Color Word Test 
+The total sample contained `r total_sample_size` test-takers.
+
+```{r process_questions, echo=FALSE, warning=FALSE, message=FALSE}
+# Subset a DF to only include once instance of each question 
+questions_df <- color_word_data_unclean %>%
+  select(question_id, question_configuration) %>%
+  distinct(question_id, .keep_all = TRUE)
+
+# Function to parse JSON safely, seperating the concatenated strings 
+parse_json_safe <- function(json_str) {
+  tryCatch(
+    fromJSON(json_str),
+    error = function(e) NA  # Return NA if parsing fails
+  )
+}
+
+# Apply the function to each row in the question_configuration column
+questions_df <- questions_df %>%
+  mutate(parsed_config = map(question_configuration, parse_json_safe))
+
+# For-loop to replace "position" into an index and "objective" into a workable format 
+pos_to_index <- function(config) {
+  pos <- config$position
+  
+  pos_index <- switch(pos,
+                      "top left" = 1,
+                      "top middle" = 2,
+                      "top right" = 3,
+                      "middle left" = 4,
+                      "middle middle" = 5,
+                      "middle right" = 6,
+                      "bottom left" = 7,
+                      "bottom middle" = 8,
+                      "bottom right" = 9,
+                      NA)
+  
+  config$objective_position <- pos_index
+  config$objective <- ifelse(config$objective == "color of the text", "color", "text")
+  return(config)
+}
+
+# Apply the function to each parsed_config
+questions_df <- questions_df %>%
+  mutate(parsed_config = map(parsed_config, pos_to_index))
+
+# Function to determine if a question is congruent or incongruent
+is_congruent <- function(questions_df) {
+
+  for (i in 1:nrow(questions_df)) {
+    config <- questions_df$parsed_config[[i]]
+    
+    obj_index <- config$objective_position
+    
+    text <- config$options$text[obj_index]
+    color <- config$options$color[obj_index]
+      
+    if (text == color) {
+      question_type <- "congruent"
+      } else {
+        question_type <- "incongruent"
+      }
+    
+    questions_df$question_type[i] <- question_type
+  }
+  
+  questions_df <- questions_df %>%
+    select(question_id, question_type)
+  
+  return(questions_df)
+}
+
+# Apply the function to update the dataframe
+questions_final_df <- is_congruent(questions_df)
+
+congruent_questions_df <- questions_final_df %>%
+  filter(question_type == "congruent")
+
+total_congruent_questions <- nrow(congruent_questions_df)
+
+incongruent_questions_df <- questions_final_df %>%
+  filter(question_type == "incongruent")
+
+total_incongruent_questions <- nrow(incongruent_questions_df)
+```
+
+The Color Word Test includes `r total_congruent_questions` congruent questions and `r total_incongruent_questions` incongruent questions. 
+
+```{r process_color_data, echo=FALSE, warning=FALSE, message=FALSE}
+color_word_data_unclean <- color_word_data_unclean %>%
+  group_by(test_taker_id) %>%
+  mutate(
+    id = group_indices()
+  ) %>%
+  ungroup() %>%
+  select(
+    id, question_id, question_correct_answer, test_taker_answer, time_used
+  ) %>%
+  mutate(
+    time_used = time_used * 0.001 # converting time_used from miliseconds to seconds 
+  )
+
+# summary(color_word_data_unclean)
+
+color_word_data_clean <- color_word_data_unclean %>%
+  group_by(id) %>%
+  filter(n() > 20) %>%
+  filter(time_used < 46) %>% # filtering time_used below 46 seconds, anything above is due to low MS at test-taker level, is 46 to high even? 
+  ungroup()
+
+# summary(color_word_data_clean)
+
+total_n <- length(unique(color_word_data_clean$id))
+
+color_word_data_clean <- inner_join(color_word_data_clean, questions_final_df, by = "question_id")
+
+color_word_incongruent <- color_word_data_clean %>%
+  filter(question_type == "incongruent") %>%
+  mutate(
+    correct = ifelse(question_correct_answer == test_taker_answer, 1, 0),
+    incongruent_error = ifelse(question_type == "incongruent" & correct == 0, 1, 0),
+    incongruent_rt = ifelse(question_type == "incongruent" & correct == 1, time_used, 0)
+  )
+
+color_word_congruent <- color_word_data_clean %>%
+  filter(question_type == "congruent") %>%
+  mutate(
+    correct = ifelse(question_correct_answer == test_taker_answer, 1, 0),
+    congruent_error = ifelse(question_type == "congruent" & correct == 0, 1, 0),
+    congruent_rt = ifelse(question_type == "congruent" & correct == 1, time_used, 0)
+  )
+
+color_word_data_full <- color_word_data_clean %>%
+  mutate(
+    correct = ifelse(question_correct_answer == test_taker_answer, 1, 0),
+    congruent_error = ifelse(question_type == "congruent" & correct == 0, 1, 0),
+    congruent_rt = ifelse(question_type == "congruent" & correct == 1, time_used, 0),
+    incongruent_error = ifelse(question_type == "incongruent" & correct == 0, 1, 0),
+    incongruent_rt = ifelse(question_type == "incongruent" & correct == 1, time_used, 0)
+  )
+
+color_word_final <- color_word_data_full %>%
+  group_by(id) %>%
+  summarise(
+    questions_administrated = n(),
+    congruent_error_rate = sum(congruent_error, na.rm = TRUE) / questions_administrated,
+    congruent_rt = mean(congruent_rt, na.rm = TRUE),
+    incongruent_error_rate = sum(incongruent_error, na.rm = TRUE) / questions_administrated,
+    incongruent_rt = mean(incongruent_rt, na.rm = TRUE),
+    total_correct = sum(correct, na.rm = TRUE)
+  )
+
+# Summary statistics for congruent data
+congruent_summary <- color_word_final %>%
+  summarise(
+    Mean_ER = mean(congruent_error_rate, na.rm = TRUE),
+    Sd_ER = sd(congruent_error_rate, na.rm = TRUE),
+    Mean_RT = mean(congruent_rt, na.rm = TRUE),
+    Sd_RT = sd(congruent_rt, na.rm = TRUE)
+  )
+
+# Summary statistics for incongruent data
+incongruent_summary <- color_word_final %>%
+  summarise(
+    Mean_ER = mean(incongruent_error_rate, na.rm = TRUE),
+    Sd_ER = sd(incongruent_error_rate, na.rm = TRUE),
+    Mean_RT = mean(incongruent_rt, na.rm = TRUE),
+    Sd_RT = sd(incongruent_rt, na.rm = TRUE)
+  )
+
+proportions <- color_word_final %>%
+  summarise(
+    mean_prop_inccongruent_error_rate = mean(incongruent_error_rate/questions_administrated),
+    mean_prop_incongruent_rt = mean(incongruent_rt/questions_administrated),
+    mean_prop_congruent_error_rate = mean(congruent_error_rate/questions_administrated),
+    mean_prop_congruent_rt = mean(congruent_rt/questions_administrated),
+  )
+
+write.csv(proportions, "color_word_props.csv")
+```
+
+### Summary Statistic Congruent Questions
+```{r print-congruent_summary, echo=FALSE}
+kable(congruent_summary, caption = "Summary Statistics for Congruent Data")
+```
+
+#### Congruent plots
+```{r plot-congruent_errors, echo=FALSE, results='asis'}
+
+con_er_bins <- round(sqrt(length(color_word_final$congruent_error_rate)))
+ 
+ggplot(color_word_final, aes(x = congruent_error_rate)) +
+  geom_histogram(bins = con_er_bins, alpha = 0.6, colour = "blue", fill = "blue") +
+  annotate("text", x = 0.3, y = 100, label = "Mean = 0.015", color = "black") +
+  annotate("text", x = 0.3, y = 85, label = "SD = 0.040", color = "black") +
+  theme_apa() +
+  labs(x = "Error Rate(ER)", y = "Total Count", title = "Congruent Error Rate Distribution")
+
+con_rt_bins <- round(sqrt(length(color_word_final$congruent_rt)))
+
+ggplot(color_word_final, aes(x = congruent_rt)) +
+  geom_histogram(bins = con_rt_bins, alpha = 0.6, colour = "blue", fill = "blue") +
+  annotate("text", x = 4.5, y = 45, label = "Mean = 3.04", color = "black") +
+  annotate("text", x = 4.5, y = 40, label = "SD = 0.768", color = "black") +
+  theme_apa() +
+  labs(x = "Reaction Time (RT)", y = "Total Count", title = "Congruent RT Distribution")
+
+```
+
+### Final Summary statistics for the incongruent condition
+```{r print-incongruent_summary, echo=FALSE}
+kable(incongruent_summary, caption = "Summary Statistics for Incongruent Data")
+```
+
+```{r plot-incongruent_errors, echo=FALSE, results='asis'}
+
+incon_er_bins <- round(sqrt(length(color_word_final$incongruent_error_rate)))
+
+
+ggplot(color_word_final, aes(x = incongruent_error_rate)) +
+  geom_histogram(bins = incon_er_bins, alpha = 0.6, colour = "blue", fill = "blue") +
+  annotate("text", x = 0.4, y = 60, label = "Mean = 0.046", color = "black") +
+  annotate("text", x = 0.4, y = 50, label = "SD = 0.071", color = "black") +
+  theme_apa() +
+  labs(x = "Error Rate (ER)", y = "Total Count", tite = "Incongruent Error Rate Distribution")
+
+
+incon_rt_bins <- round(sqrt(length(color_word_final$incongruent_rt)))
+
+
+ggplot(color_word_final, aes(x = incongruent_rt)) +
+  geom_histogram(bins = incon_rt_bins, alpha = 0.6, colour = "blue", fill = "blue") +
+  annotate("text", x = 7.5, y = 50, label = "Mean = 4.01", color = "black") +
+  annotate("text", x = 7.5, y = 40, label = "SD = 1.02", color = "black") +
+  theme_apa() +
+  labs(x = "Reaction Time (RT)", y = "Total Count", title = "Incongruent RT Distribution")
+
+```
+
+#### Extra: Paired T-Test between The two Conditions (RT)
+```{r t_test_rt, echo=FALSE, warning=FALSE, message=FALSE}
+# Since I plotted RT for both conditions and they were normally distributed I will not perform a shapiro test 
+res <- t.test(color_word_final$congruent_rt, color_word_final$incongruent_rt, paired = TRUE)
+```
+
+A paired samples t.test was performed on the reaction time of the congruent vs incongruent conditions, the result provide strong evidence for the existance of a "stroop-interference effect" in Cohr Group's Color Word Test, t(`r res$parameter`) = `r res$statistic`, p = < .001. CI [`r res$conf.int[1]`, `r res$conf.int[2]`]. Overall, the t.test resulted in a sample estimate mean difference = `r res$estimate`

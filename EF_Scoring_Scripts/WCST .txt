@@ -1,0 +1,47 @@
+WCST 
+
+Suggested Variables 
+
+- Correct Answers
+
+Captures:
+Very general variable, measures overall executive functioning, encompassing multiple cognitive processes involved with WCST. One step "downwards", this variable indicates the participant’s overall ability to learn from feedback and adapt their behavior accordingly.
+
+- Nonperseverative Errors (random errors) 
+
+Captures: This variable assesses attentional control and the test-takers accuracy in task performance, indicating lapses in attention or understanding of the task rules. Also reflects error monitoring, the ability to detect and avoid different kinds of mistakes. 
+
+
+- Pervasive errors:
+Pervasive errors refer to the number of times a participant continues to use an incorrect sorting strategy even after receiving feedback that the strategy is incorrect.
+
+Captures: 
+Captures problem-solving ability, centering in on the inability to generate, test and shift different strategies or solutions to solve problems even when feedback says the current strategy or solution being applied is incorrect.
+
+
+- Failure to maintain set: 
+Failure to maintain set refers to the inability to continue using a correct sorting strategy consistently over successive trials, despite knowing the correct rule.
+
+Captures:
+Captures sustained attention, the ability to maintain focus and consistent performance over time, it also explains working memory since test-takers are required to hold the rule in mind and apply it consistently across trails. 
+
+ 
+- Tries to 1st category 
+Refers to the number of trials taken to correctly identify the first sorting rule.
+
+This variable assesses the efficiency of learning new rules, indicating how quickly a participant can grasp and apply the first correct sorting strategy. It also reflects problem solving skills, indicated by the ability of the test-taker to generate and test different strategies. 
+
+
+- NOVEL: Cognitive Persistence 
+Cognitive Persistence is a novel measure developed to capture the effort applied to overcome task difficulty. It is entirely distinct from cognitive flexibility and other constructs measured through the WCST.
+
+To derive cognitive persistence, we first score efficient shifts. An efficient shift occurs when a test-taker switches to a new sorting rule immediately after receiving negative feedback, without making other errors in the sequence. Efficient shifts are counted for sequences where participants reach the criterion of 10 consecutive correct responses. Only post-switch trials (trials following the first rule change) are included in the scoring.
+
+Next, the proportion of correct answers (accuracy) is calculated for post-switch trials. The median accuracy for each number of efficient shifts in the sample is then calculated, reflecting the expected performance for different levels of set-shifting ability (norm-group).
+
+For each participant, the expected accuracy is subtracted from the observed accuracy, and the residual accuracy represents cognitive persistence. A positive residual indicates higher-than-expected accuracy, signifying greater persistence.
+
+Cognitive persistance represents the test-taker's effort applied to overcome task difficulties which could be very valuable in predicting for example branch-manager's performance?
+
+
+

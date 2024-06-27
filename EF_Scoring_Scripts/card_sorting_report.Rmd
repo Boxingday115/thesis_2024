@@ -1,0 +1,353 @@
+---
+title: "Card Sorting Report"
+author: "Hampus Lennaárd - Data Scientist @ Cohr Group"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(jsonlite)
+library(purrr)
+library(papaja)
+library(knitr)
+options(digits = 3)
+```
+
+```{r load-data, echo=FALSE, warning=FALSE, message=FALSE}
+card_data_unclean <- read.csv("raw_card_data.csv")
+
+total_sample_size <- length(unique(card_data_unclean$test_taker_id))
+```
+
+### Overview of Card Sorting Test 
+The total sample contained `r total_sample_size` test-takers.
+
+```{r process_questions, echo=FALSE, warning=FALSE, message=FALSE}
+questions_df <- card_data_unclean %>%
+  select(question_id, question_correct_answer, question_configuration) %>%
+  distinct(question_id, .keep_all = TRUE)
+
+# Function to parse JSON safely, seperating the concatenated strings 
+parse_json_safe <- function(json_str) {
+  tryCatch(
+    fromJSON(json_str),
+    error = function(e) NA  # Return NA if parsing fails
+  )
+}
+
+# Apply the function to each row in the question_configuration column
+questions_df <- questions_df %>%
+  mutate(parsed_config = map(question_configuration, parse_json_safe)) %>%
+  select(-question_configuration)
+
+find_rule <- function(questions_df) {
+  
+  # Helper function to determine rule of current card
+    find_common_value <- function(correct_card, objective) {
+      for(col in names(correct_card)) {
+        if(correct_card[[col]] == objective[[col]]) {
+          last_common_col <- col
+        }
+      }
+      return(last_common_col) # returning last col to avoid instances were > 1 common cols are found, see note at top of report
+    }
+  
+  
+  for(i in 1:nrow(questions_df)) {
+    # Fetch the correct answer
+    correct_answer <- questions_df$question_correct_answer[i]
+
+    # Fetch the json list for manipulation
+    json_list <- questions_df$parsed_config[[i]]
+    
+    # Fetch card-options
+    card_options <- json_list$options
+
+    # Determine which card was correct & fetch the data for that card 
+    correct_card <- card_options[correct_answer,1:3]
+    
+    # Fetch data for sorting card
+    objective <- as.data.frame(json_list$objective) %>%
+      select(-c("position", "backgroundColor")) # removing columns that could mess with "shapes" and "shapeColor" when searching for rule
+  
+    # Determine rule
+    rule <- find_common_value(correct_card, objective)
+    
+    questions_df$rule[i] <- rule # creating the new "rule" column in df and assigning current rule of question to question row
+
+  }
+    return(questions_df)
+}
+
+questions_final_df <- find_rule(questions_df) %>%
+  select(-c("parsed_config")) # removing column, not needed anymore 
+
+questions_final_df <- questions_final_df %>%
+  mutate(
+    rule_number = case_when(
+      rule == "shapeColor" ~ 1,
+      rule == "shapes" ~ 2,
+      rule == "shape" ~ 3,
+      TRUE ~ NA_real_  # fail-safe
+    )
+  )
+
+# Finally join questions_final_df with the card_data_unclean 
+card_data_expanded <- inner_join(card_data_unclean, questions_final_df, by = "question_id") %>%
+  select(-c("question_correct_answer.y", "question_configuration")) %>% # cleaning up some side effects
+  rename(question_correct_answer = question_correct_answer.x) 
+```
+
+```{r clean_card_data, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Helper function to check if a test-taker answer is repeated consecutively for at least 20 times (indicating guessing only)
+has_consecutive_repeats <- function(data, n = 10) {
+  rle_vec <- rle(data$test_taker_answer)
+  if (any(rle_vec$lengths >= n)) {
+    return(TRUE)
+  }
+  return(FALSE)
+}
+
+# Assuming card_data_expanded is already defined
+# Create a dataframe with test_taker_ids that have consecutive repeats
+consecutive_repeats_df <- card_data_expanded %>%
+  group_by(test_taker_id) %>%
+  filter(has_consecutive_repeats(cur_data(), 10)) %>%
+  ungroup()
+
+# Create a cleaned dataframe excluding those test_taker_ids with consecutive repeats
+card_data_clean <- card_data_expanded %>%
+  group_by(test_taker_id) %>%
+  filter(n() > 20) %>%
+  filter(!test_taker_id %in% consecutive_repeats_df$test_taker_id) %>%
+  filter(!is.na(test_taker_answer)) %>%
+  ungroup()
+
+total_sample <- length(unique(card_data_clean$test_taker_id))
+```
+
+In order to clean the data-set I decided to filter out people who had answered less than 20 questions in total, counting these people as faulty trails. Moreover a simple function was written to filter away people who had answered the same card consecutively for 10 questions in a row. Indicating that at some point the test-taker stopped conducting the test properly and started just re-pressing the same card over and over again, regardless of the active rule. 
+
+This resulted in a total N of `r total_sample`
+
+```{r function-categorize_responses, echo=FALSE, warning=FALSE, message=FALSE}
+categorise_responses <- function(dataframe) {
+  unique_ids <- unique(dataframe$test_taker_id)
+  
+  results <- tibble(
+    test_taker_id = unique_ids,
+    corr_ans = integer(length(unique_ids)),
+    p_error = integer(length(unique_ids)),
+    non_p_error = integer(length(unique_ids)),
+    trails_first_category = integer(length(unique_ids)),
+    t_error = integer(length(unique_ids)),
+    questions_administrated = integer(length(unique_ids)),
+    conceptual_level_responses = integer(length(unique_ids))
+  )
+  
+  for (id in unique_ids) {
+    id_data <- dataframe %>%
+      filter(test_taker_id == id) %>%
+      arrange(question_order) # ensure rows are arranged from 1:100 / last
+    
+    shift_questions <- c(6, 11, 16, 21, 26, 31, 36, 41, 46, 51, 56, 61, 66, 71, 76, 81, 86, 91, 96)
+    
+    # Initialize relevant variables
+    p_error <- 0
+    non_p_error <- 0
+    corr_ans <- 0
+    t_error <- 0
+    first_category_complete <- FALSE
+    consecutive_logic <- FALSE
+    consecutive_correct <- 0
+    
+    for (question in 1:nrow(id_data)) {
+      current_rule <- id_data$rule_number[question]
+      correct_answer <- id_data$question_correct_answer[question]
+      test_taker_answer <- id_data$test_taker_answer[question]
+      
+      if (is.na(test_taker_answer)) next # Skip iteration if the answer is NA
+      
+      if (question == 1) {
+        if (correct_answer == test_taker_answer) {
+          corr_ans <- corr_ans + 1
+          consecutive_logic <- TRUE
+        } else {
+          non_p_error <- non_p_error + 1
+          t_error <- t_error + 1
+          consecutive_logic <- FALSE
+        }
+        if (first_category_complete == FALSE && correct_answer == test_taker_answer) {
+          results$trails_first_category[results$test_taker_id == id] <- question
+          first_category_complete <- TRUE
+        }
+      } else {
+        previous_rule <- id_data$rule_number[question - 1]
+        
+        if (correct_answer == test_taker_answer) {
+          corr_ans <- corr_ans + 1
+          if (consecutive_logic) {
+            consecutive_correct <- consecutive_correct + 1
+          }
+          consecutive_logic <- TRUE
+        } else {
+          t_error <- t_error + 1
+          consecutive_logic <- FALSE
+          
+          if (question %in% shift_questions) {
+            non_p_error <- non_p_error + 1
+          } else {
+            if (previous_rule == current_rule) {
+              p_error <- p_error + 1
+            } else {
+              non_p_error <- non_p_error + 1
+            }
+          }
+        }
+        if (first_category_complete == FALSE && correct_answer == test_taker_answer) {
+          results$trails_first_category[results$test_taker_id == id] <- question
+          first_category_complete <- TRUE
+        }
+      }
+    }
+    
+    results$corr_ans[results$test_taker_id == id] <- corr_ans
+    results$p_error[results$test_taker_id == id] <- p_error
+    results$non_p_error[results$test_taker_id == id] <- non_p_error
+    results$t_error[results$test_taker_id == id] <- t_error
+    results$questions_administrated[results$test_taker_id == id] <- corr_ans + t_error
+    results$conceptual_level_responses[results$test_taker_id == id] <- consecutive_correct
+  }
+  
+  return(results)
+}
+
+
+```
+```{r call-categorise_responses, echo=FALSE, warning=FALSE, message=FALSE}
+final_card_data <- categorise_responses(card_data_clean)
+```
+
+### Summary Statistics of final data 
+**NOTE** 
+
+"clr" : Conceptual Level Responses
+
+"p_error": perseverative errors
+
+"non_p_error": non-perseverative errors
+
+```{r summarise_test_results, echo=FALSE, warning=FALSE, message=FALSE}
+summary_stats_correct <- final_card_data %>%
+  summarise(
+    Mean_Correct = mean(corr_ans),
+    SD_Correct = sd(corr_ans),
+    Mean_trails_first = mean(trails_first_category),
+    SD_trails_first = sd(trails_first_category),
+    Mean_clr = mean(conceptual_level_responses),
+    SD_clr = sd(conceptual_level_responses)
+  )
+
+kable(summary_stats_correct, caption = "Summary: Correct Answers & Trails to first category")
+
+summary_stats_errors <- final_card_data %>%
+  summarise(
+    Mean_p_error = mean(p_error),
+    SD_p_error = sd(p_error),
+    Mean_non_p_error = mean(non_p_error),
+    SD_non_p_error = sd(non_p_error)
+  )
+
+kable(summary_stats_errors, caption = "Summary: Type of Errors")
+
+
+
+proportions <- final_card_data %>%
+  summarise(
+    mean_prop_p_error = mean(p_error/questions_administrated),
+    mean_prop_non_p_error = mean(non_p_error/questions_administrated),
+    mean_prop_trails_first = mean(trails_first_category/questions_administrated),
+    mean_prop_t_error = mean(t_error/questions_administrated),
+    mean_prop_clr = mean(conceptual_level_responses/questions_administrated),
+    mean_prop_corr = mean(corr_ans/questions_administrated)
+  )
+```
+
+#### Total Correct Answers
+In WCST the total correct categories achieved measures cognitive flexibility where higher numbers are desirable. 
+```{r plot-correct_answers, echo=FALSE}
+bins_use <- round(sqrt(length(final_card_data$corr_ans)))
+ 
+ggplot(final_card_data, aes(x = corr_ans)) +
+  geom_histogram(bins = bins_use, alpha = 0.6, colour = "blue", fill = "blue") +
+  annotate("text", x = 70, y = 30, label = "Mean = 38", color = "black") +
+  annotate("text", x = 70, y = 25, label = "SD = 18", color = "black") +
+  theme_apa() +
+  labs(x = "Total Correct Answers", y = "Total Count", title = "Total Correct Answers")
+
+```
+
+#### Trails to Complete First Category
+In WCST the trails to complete first category reflects initial cognitive flexibility and the test-takers ability to generate and test new solutions to faced problems. A lower number is desirable, indicating greater initial flexibility and problem-solving ability. 
+```{r plot-trails_first_category, echo=FALSE}
+bins_use <- round(sqrt(length(final_card_data$trails_first_category)))
+ 
+ggplot(final_card_data, aes(x = trails_first_category)) +
+  geom_histogram(bins = bins_use, alpha = 0.6, colour = "blue", fill = "blue") +
+  annotate("text", x = 15, y = 75, label = "Mean = 3.96", color = "black") +
+  annotate("text", x = 15, y = 65, label = "SD = 3.01", color = "black") +
+  theme_apa() +
+  labs(x = "Trails to 1st Correct Sort", y = "Total Count", title = "Trails to First Correct Sort")
+
+```
+
+#### Perseverative Errors
+In WCST the perseverative errors are errors where the test-taker continues to use a previously correct rule despite feedback indicating that it is no longer corrrect. The measure thus reflect difficulties in shifting cognitive strategies. A lower number is therefore desirable, indicating better ability to shift cognitive strategies. 
+
+```{r plot-p_errors, echo=FALSE}
+bins_use <- round(sqrt(length(final_card_data$p_error)))
+
+ggplot(final_card_data, aes(x = p_error)) +
+  geom_histogram(bins = bins_use, alpha = 0.6, colour = "blue", fill = "blue") +
+  annotate("text", x = 55, y = 30, label = "Mean = 32.5", color = "black") +
+  annotate("text", x = 55, y = 25, label = "SD = 13.1", color = "black") +
+  theme_apa() +
+  labs(x = "Perseverative Errors", y = "Total Count", title = "Perseverative Errors")
+
+```
+
+#### Non-Perseverative Errors
+In WCST, the Non-Perseverative Errors are errors where the test-taker makes an error that is not based on the previous rule, it therefore reflects guessing / seeking behaviour and can be seen as a proxy for ones ability to generate and test new solutions to problems. 
+```{r plot-non_p_errors, echo=FALSE}
+bins_use <- round(sqrt(length(final_card_data$non_p_error)))
+ 
+ggplot(final_card_data, aes(x = non_p_error)) +
+  geom_histogram(bins = bins_use, alpha = 0.6, colour = "blue", fill = "blue") +
+  annotate("text", x = 25, y = 45, label = "Mean = 14.6", color = "black") +
+  annotate("text", x = 25, y = 40, label = "SD = 4.13", color = "black") +
+  theme_apa() +
+  labs(x = "Non-Perseverative Errors", y = "Total Count", title = "Non-Perseverative Errors")
+
+```
+
+#### Conceptual Level Responses
+In WCST, the conceptual level responses measures the number of consecutive correct responses after a test-taker has sorted a card correctly, it reflects, on a conceptual-level the test-takers ability to identify, learn and apply the rule consistently. It is therefore a measure of several aspects of cognitive flexibility, predominantly sustained attention as the test-taker has to be able to keep the rule in mind and apply it consecutively and error monitoring / correction as the test-taker has to recognize when the rule is incorrect, figure out the new rule and then consistently apply it once more. A higher number is thus desirable. 
+```{r plot-conceptual_level_responses, echo=FALSE}
+bins_use <- round(sqrt(length(final_card_data$conceptual_level_responses)))
+
+ggplot(final_card_data, aes(x = conceptual_level_responses)) +
+  geom_histogram(bins = bins_use, alpha = 0.6, colour = "blue", fill = "blue") +
+  annotate("text", x = 55, y = 25, label = "Mean = 23.9", color = "black") +
+  annotate("text", x = 55, y = 20, label = "SD = 14.5", color = "black") +
+  theme_apa() +
+  labs(x = "CLR", y = "Total Count", title = "Conceptual Level Responses")
+
+```
+
+**Final Note** 
+All bins were calculated according to the "square-root choice method": 
+number_of_bins = sqrt(length(final_card_data$x))

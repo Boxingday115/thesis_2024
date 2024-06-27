@@ -1,0 +1,20 @@
+Tower of London
+
+Suggested variables
+
+Total Moves
+Captures: An overall planning ability reflecting the ability to devise an effective and correct plan Before executing moves where a lower number of moves is desierable. Also measures problem-solving efficiency where fewer moves indicate better problem-solving skills.
+
+Total Time
+Caputres: Overall speed of cognitive processing in problem-solving. Also reflects engagement and persistance in task which is not as relevant for us. 
+
+Execution Time: Time taken to execute the moves after initial planning period 
+Caputres: Speed and efficiency of motor actions in task, not that relevant for us I Believe? Does reflect how well test-takers can translate plan into action. 
+
+Planning Time: Time spent Before making first move
+Captures: Directly measures the participant's ability to plan ahead, depth of thought and consideration Before making their first move. Could therefore be interpreted as how well a (ex) branch manager is at planning ahead of time, taking total moves into consideration as well (maybe adjusted or transformed variable?) could quite litterarly give a very solid understanding of a person's planning ability while accounting for the fact that the plan also has to be a good one! 
+
+- In our case we'd measure time from presenting the question to the first disc-move.
+
+# of problems solved 
+Captures: Overall effectiveness in problem solving and cognitive flexibility (ability to adapt strategies and solve the problem) 
