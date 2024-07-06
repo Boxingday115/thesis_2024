@@ -17,9 +17,15 @@ options(digits = 3)
 ```
 
 ```{r load-data, echo=FALSE, warning=FALSE, message=FALSE}
-card_data_unclean <- read.csv("raw_card_data.csv")
+card_data_unclean <- read.csv("E:/thesis_2024/Data_bucket/thesis_raw_card_data.csv") %>%
+  rename(user_id = test_taker_id) # renaming due to script being written with another id column used 
 
-total_sample_size <- length(unique(card_data_unclean$test_taker_id))
+# Adding a names_df to keep track of ids 
+names_df <- card_data_unclean %>%
+  distinct(user_id, .keep_all = TRUE) %>%
+  select(user_id, firstname, lastname)
+
+total_sample_size <- length(unique(card_data_unclean$user_id))
 ```
 
 ### Overview of Card Sorting Test 
@@ -82,8 +88,7 @@ find_rule <- function(questions_df) {
     return(questions_df)
 }
 
-questions_final_df <- find_rule(questions_df) %>%
-  select(-c("parsed_config")) # removing column, not needed anymore 
+questions_final_df <- find_rule(questions_df)
 
 questions_final_df <- questions_final_df %>%
   mutate(
@@ -112,21 +117,25 @@ has_consecutive_repeats <- function(data, n = 10) {
   return(FALSE)
 }
 
+# Below code is commented out because data-processing has already been done in this case 
+
 # Assuming card_data_expanded is already defined
 # Create a dataframe with test_taker_ids that have consecutive repeats
-consecutive_repeats_df <- card_data_expanded %>%
-  group_by(test_taker_id) %>%
-  filter(has_consecutive_repeats(cur_data(), 10)) %>%
-  ungroup()
+#consecutive_repeats_df <- card_data_expanded %>%
+#  group_by(test_taker_id) %>%
+#  filter(has_consecutive_repeats(cur_data(), 10)) %>%
+#  ungroup()
 
 # Create a cleaned dataframe excluding those test_taker_ids with consecutive repeats
-card_data_clean <- card_data_expanded %>%
-  group_by(test_taker_id) %>%
-  filter(n() > 20) %>%
-  filter(!test_taker_id %in% consecutive_repeats_df$test_taker_id) %>%
-  filter(!is.na(test_taker_answer)) %>%
-  ungroup()
+#card_data_clean <- card_data_expanded %>%
+#  group_by(test_taker_id) %>%
+#  filter(n() > 20) %>%
+#  filter(!is.na(test_taker_answer)) %>%
+#  ungroup()
 
+# Temp to avoid restructuring
+card_data_clean <- card_data_expanded %>%
+ 
 total_sample <- length(unique(card_data_clean$test_taker_id))
 ```
 
@@ -136,10 +145,11 @@ This resulted in a total N of `r total_sample`
 
 ```{r function-categorize_responses, echo=FALSE, warning=FALSE, message=FALSE}
 categorise_responses <- function(dataframe) {
-  unique_ids <- unique(dataframe$test_taker_id)
   
+  unique_ids <- unique(dataframe$user_id)
+
   results <- tibble(
-    test_taker_id = unique_ids,
+    user_id = unique_ids,
     corr_ans = integer(length(unique_ids)),
     p_error = integer(length(unique_ids)),
     non_p_error = integer(length(unique_ids)),
@@ -151,7 +161,7 @@ categorise_responses <- function(dataframe) {
   
   for (id in unique_ids) {
     id_data <- dataframe %>%
-      filter(test_taker_id == id) %>%
+      filter(user_id == id) %>%
       arrange(question_order) # ensure rows are arranged from 1:100 / last
     
     shift_questions <- c(6, 11, 16, 21, 26, 31, 36, 41, 46, 51, 56, 61, 66, 71, 76, 81, 86, 91, 96)
@@ -165,12 +175,54 @@ categorise_responses <- function(dataframe) {
     consecutive_logic <- FALSE
     consecutive_correct <- 0
     
+    rules_applied_vec <- c()
+    
     for (question in 1:nrow(id_data)) {
       current_rule <- id_data$rule_number[question]
       correct_answer <- id_data$question_correct_answer[question]
       test_taker_answer <- id_data$test_taker_answer[question]
       
-      if (is.na(test_taker_answer)) next # Skip iteration if the answer is NA
+      if (is.na(test_taker_answer)) { # NA present breaks the response-pattern completely 
+            break # Exit the inner loop and move to the next id
+      }  
+      
+      # Figuring out which rule was applied:
+      
+      # Step 1 - Fetch card details 
+      card_details <- id_data$parsed_config[[question]]$options
+    
+      # Step 2 - Fetch the card test-taker chose 
+      chosen_card_details <- card_details[test_taker_answer, ]
+      
+      # Step 3 - Fetch the details of the card to be sorted 
+      objective_card_details <- as.data.frame(id_data$parsed_config[[question]]$objective) %>%  # its a list so convert to df
+        select(-c(position, backgroundColor)) # remove these columns as they can mess with evaluation of commonalities
+
+      # Step 4 - Compare both cards to find commonalities
+      common_feature <- which(chosen_card_details == objective_card_details)
+      
+     # Step 5 - Ensure to get only the first common feature (one card has >1 common features)
+      if (length(common_feature) > 0) {
+        common_feature <- common_feature[1]
+      } else {
+        common_feature <- NA
+      }
+
+      # Step 6 - Decide which rule was applied 
+      rule_used <- if (!is.na(common_feature)) names(chosen_card_details)[common_feature] else NA # setting rule used to 0 for ambigious sorts - these are exploration errors with no clear hypothesis from test-taker 
+
+      # Step 7 - Convert to numeric so we can compare with rule_number
+      if (!is.na(rule_used)) {
+        rule_applied <- switch(rule_used,
+                               "shapeColor" = 1,
+                               "shapes" = 2,
+                               "shape" = 3,
+                               0) # default case, ambiguous sort - exploration with no clear hypothesis from the test-taker
+      } else {
+        rule_applied <- 0
+      }
+      
+      rules_applied_vec[question] <- rule_applied
       
       if (question == 1) {
         if (correct_answer == test_taker_answer) {
@@ -182,12 +234,13 @@ categorise_responses <- function(dataframe) {
           consecutive_logic <- FALSE
         }
         if (first_category_complete == FALSE && correct_answer == test_taker_answer) {
-          results$trails_first_category[results$test_taker_id == id] <- question
+          results$trails_first_category[results$user_id == id] <- question
           first_category_complete <- TRUE
         }
       } else {
         previous_rule <- id_data$rule_number[question - 1]
-        
+        previous_applied_rule <- rules_applied_vec[question - 1]
+
         if (correct_answer == test_taker_answer) {
           corr_ans <- corr_ans + 1
           if (consecutive_logic) {
@@ -201,7 +254,7 @@ categorise_responses <- function(dataframe) {
           if (question %in% shift_questions) {
             non_p_error <- non_p_error + 1
           } else {
-            if (previous_rule == current_rule) {
+            if (previous_rule == current_rule && rule_applied == previous_applied_rule) {
               p_error <- p_error + 1
             } else {
               non_p_error <- non_p_error + 1
@@ -209,18 +262,18 @@ categorise_responses <- function(dataframe) {
           }
         }
         if (first_category_complete == FALSE && correct_answer == test_taker_answer) {
-          results$trails_first_category[results$test_taker_id == id] <- question
+          results$trails_first_category[results$user_id == id] <- question
           first_category_complete <- TRUE
         }
       }
     }
     
-    results$corr_ans[results$test_taker_id == id] <- corr_ans
-    results$p_error[results$test_taker_id == id] <- p_error
-    results$non_p_error[results$test_taker_id == id] <- non_p_error
-    results$t_error[results$test_taker_id == id] <- t_error
-    results$questions_administrated[results$test_taker_id == id] <- corr_ans + t_error
-    results$conceptual_level_responses[results$test_taker_id == id] <- consecutive_correct
+    results$corr_ans[results$user_id == id] <- corr_ans
+    results$p_error[results$user_id == id] <- p_error
+    results$non_p_error[results$user_id == id] <- non_p_error
+    results$t_error[results$user_id == id] <- t_error
+    results$questions_administrated[results$user_id == id] <- corr_ans + t_error
+    results$conceptual_level_responses[results$user_id == id] <- consecutive_correct
   }
   
   return(results)
@@ -230,6 +283,28 @@ categorise_responses <- function(dataframe) {
 ```
 ```{r call-categorise_responses, echo=FALSE, warning=FALSE, message=FALSE}
 final_card_data <- categorise_responses(card_data_clean)
+
+# Using time_used from the original "results" dataframe, time_used in this dataframe is not capped at 150 seconds so time is incorrect
+
+#Joining final data with names, writing to excel
+final_card <- inner_join(names_df, final_card_data, by = "user_id")
+writexl::write_xlsx(final_card, "E:/thesis_2024/Data_bucket/final_card_data.xlsx")
+
+# Calculating proportions
+card_proportions <- final_card %>%
+  summarise(
+    total_p_error = sum(p_error, na.rm = TRUE),
+    total_non_p_error = sum(non_p_error, na.rm = TRUE),
+    total_trails_first = sum(trails_first_category, na.rm = TRUE),
+    total_clr = sum(conceptual_level_responses, na.rm = TRUE),
+    total_questions = sum(questions_administrated, na.rm = TRUE),
+    mean_prop_p_error = total_p_error / total_questions,
+    mean_prop_non_p_error = total_non_p_error / total_questions,
+    mean_prop_trails_first = total_trails_first / total_questions,
+    mean_prop_clr = total_clr / total_questions
+  )
+
+writexl::write_xlsx(card_proportions, "E:/thesis_2024/Data_bucket/card_proportions.xlsx")
 ```
 
 ### Summary Statistics of final data 
