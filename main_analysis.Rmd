@@ -1,0 +1,277 @@
+---
+title: "Is Smartphone the Smarter Choice - Statistical Analysis"
+author: "Hampus Lennaárd"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, echo=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(purrr)
+library(magrittr)
+library(stringr)
+library(caret)
+library(knitr)
+library(kableExtra)
+library(rstatix)
+library(stats)
+library(corrplot)
+library(moments)
+library(ez)
+library(ggpubr)
+```
+
+```{r function-load_csv_data, echo=FALSE, warning=FALSE, message=FALSE}
+#' Loads CSV datafile 
+
+load_xlsx <- function(file_path, sheet) {
+  # Check if the file exists at the given path
+  if (!file.exists(file_path)) {
+    stop("The file does not exist at the specified path: ", file_path)
+  }
+  
+  # Read the CSV data into a data frame
+  data <- readxl::read_xlsx(file_path, sheet = sheet)
+  
+  # Return the loaded data
+  return(data)
+}
+```
+```{r call-load-data, echo=FALSE}
+wcst_pc <- load_xlsx("Data_bucket/final_data.xlsx", 2)
+print(unique(wcst_pc$first_name))
+wcst_phone <- load_xlsx("Data_bucket/final_data.xlsx", 3)
+
+# Function to check uid consistency between two data frames
+check_uid_consistency <- function(df1, df2) {
+  uids_df1 <- unique(df1$uid)
+  uids_df2 <- unique(df2$uid)
+  all(uids_df1 %in% uids_df2) && all(uids_df2 %in% uids_df1)
+}
+
+check_uid_consistency(wcst_pc, wcst_phone)
+ 
+full_data <- bind_rows(wcst_pc, wcst_phone) %>%
+  select(-first_name)
+```
+
+```{r function-summarise_descriptives, echo=FALSE, warning=FALSE, message=FALSE}
+# Calculate descriptive statistics
+
+summarised_pc <- wcst_pc %>% 
+  summarise(
+    "Modality" = first(modality),
+    "Mean Categories Completed" = round(mean(correct_answers, na.rm = TRUE), 3),
+    "Mean Trails 1st" = round(mean(trails_first_category, na.rm = TRUE), 3),
+    "Mean CLR %" = round(mean(clr_percent, na.rm = TRUE), 3) * 100,
+    "Mean P - Errors" = round(mean(p_error, na.rm = TRUE), 3),
+    "Mean Non - P Errors" = round(mean(non_p_error, na.rm = TRUE), 3),
+    "Mean Error Rate" = round(mean(error_rate, na.rm = TRUE), 3) * 100,
+    "Mean # of Questions" = round(mean(administrated_questions, na.rm = TRUE), 3),
+    "Mean Time Used" = round(mean(total_time, na.rm = TRUE), 3)
+  )
+
+summarised_phone <- wcst_phone %>% 
+  summarise(
+    "Modality" = first(modality),
+    "Mean Categories Completed" = round(mean(correct_answers, na.rm = TRUE), 3),
+    "Mean Trails 1st" = round(mean(trails_first_category, na.rm = TRUE), 3),
+    "Mean CLR %" = round(mean(clr_percent, na.rm = TRUE), 3) * 100,
+    "Mean P - Errors" = round(mean(p_error, na.rm = TRUE), 3),
+    "Mean Non - P Errors" = round(mean(non_p_error, na.rm = TRUE), 3),
+    "Mean Error Rate" = round(mean(error_rate, na.rm = TRUE), 3) * 100,
+    "Mean # of Questions" = round(mean(administrated_questions, na.rm = TRUE), 3),
+    "Mean Time Used" = round(mean(total_time, na.rm = TRUE), 3)
+  )
+    
+   
+summarised_data <- bind_rows(summarised_pc, summarised_phone)
+print(summarised_data)
+```
+
+```{r call-create-boxplot, echo=FALSE, warning=FALSE, message=FALSE}
+# Function to create a boxplot
+create_boxplot <- function(full_data, y_var) {
+  
+  # Calculate mean and standard deviation
+  mean_value <- round(mean(full_data[[y_var]], na.rm = TRUE), 2)
+  sd_value <- round(sd(full_data[[y_var]], na.rm = TRUE), 2)
+  
+  plot <- ggplot(full_data, aes(x = modality, y = .data[[y_var]], fill = modality)) +
+    geom_boxplot() +
+    theme_minimal() +
+    theme(legend.position = "none") +  # Remove legend
+    labs(
+      title = print(paste0("Boxplot of ", y_var, "by modality")),
+      y = y_var,
+      x = "Modality"
+    ) +
+    annotate("text", x = Inf, y = Inf, label = paste("Mean =", mean_value), color = "black", hjust = 1.1, vjust = 2) +
+    annotate("text", x = Inf, y = Inf, label = paste("SD =", sd_value), color = "black", hjust = 1.1, vjust = 3)
+  
+  print(plot)
+}
+
+# Assuming full_data is the combined dataframe from the previous step
+create_boxplot(full_data, "correct_answers")
+create_boxplot(full_data, "administrated_questions")
+create_boxplot(full_data, "error_rate")
+create_boxplot(full_data, "p_error")
+create_boxplot(full_data, "non_p_error")
+create_boxplot(full_data, "clr_percent")
+create_boxplot(full_data, "trails_first_category")
+```
+
+```{r call-create-histograms, echo=FALSE, warning=FALSE, message=FALSE}
+create_histograms <- function(full_data, x_var) {
+  
+  # Calculate binwidth using Freedman-Diaconis rule
+  bins <- round(sqrt(length(full_data[[x_var]])))
+  
+  # Define custom colors for the modalities
+  custom_colors <- c("pc" = "steelblue", "phone" = "forestgreen")
+  
+  plot <- ggplot(full_data, aes(x = .data[[x_var]], fill = modality)) +
+    geom_histogram(bins = bins, alpha = 0.7, position = "identity") +
+    facet_grid(vars(modality)) +
+    scale_fill_manual(values = custom_colors) +
+    theme_minimal() +
+    labs(
+      title = paste("Distribution of", x_var),
+      x = x_var,
+      y = "Count"
+    )
+  
+  print(plot)
+}
+
+create_histograms(full_data, "correct_answers")
+create_histograms(full_data, "administrated_questions")
+create_histograms(full_data, "error_rate")
+create_histograms(full_data, "p_error")
+create_histograms(full_data, "non_p_error")
+create_histograms(full_data, "clr_percent")
+create_histograms(full_data, "trails_first_category")
+
+```
+
+```{r function-model_anova, echo=FALSE, warning=FALSE, message=FALSE}
+model_anova <- function(dataset, response_variable) {
+  set.seed(741)
+  
+  res <- aov(dataset[[response_variable]] ~ modality*group + Error(uid/modality), data = dataset)
+
+  return(res)
+}
+```
+```{r call-model_anova, echo=FALSE, warning=FALSE, message=FALSE}
+
+p_error_aov <- model_anova(full_data, "p_error")
+print(summary(p_error_aov))
+```
+
+```{r function-outlier_analysis, echo=FALSE, message=FALSE, warning=FALSE}
+outlier_analysis <- function(long_data) {
+  outlier_data <- long_data %>%
+    group_by(test, modality) %>%
+    identify_outliers(value)
+  data.frame(outlier_data)
+  
+  return(outlier_data)
+}
+```
+```{r call-outlier_analysis, echo=FALSE, message=FALSE, warning=FALSE}
+outliers <- outlier_analysis(melted_data)
+print(outliers)
+
+# The data reveals some outliers / extreme cases, but then again these are Z-scores to I dont really think its valid to do an outlier analysis on them?
+# Either way sample to low :()
+
+```
+Anova Normality Check
+```{r print_qq_plot, echo=FALSE, warning=FALSE, message=FALSE}
+# Assuming your dataframe is named long_data
+unique_tasks <- unique(model_data$test)
+unique_conditions <- unique(model_data$modality)
+
+# Set up the plot layout to 2x2
+par(mfrow = c(1, 2))
+
+# Loop through each task and condition
+for (task in unique_tasks) {
+  for (condition in unique_conditions) {
+    subset_data <- subset(model_data, test == task & modality == condition)
+    qqnorm(subset_data$value, main = paste("QQ Plot", task, ",", condition))
+    qqline(subset_data$value, col = "red")
+    if (condition == unique_conditions[length(unique_conditions)] && task == unique_tasks[length(unique_tasks)]) {
+      par(mfrow = c(1, 2))  # Reset for the next page
+    }
+  }
+}
+```
+
+```{r perform-shapiro, echo=FALSE, warning=FALSE, message=FALSE}
+# Assuming your dataframe is named long_data
+unique_tasks <- unique(model_data$test)
+unique_conditions <- unique(model_data$modality)
+
+# Perform Shaprio-test
+# Loop through each task and condition
+for (task in unique_tasks) {
+  for (condition in unique_conditions) {
+    subset_data <- subset(model_data, test == task & modality == condition)
+    res <- shapiro.test(subset_data$performance_z)
+    print(res)
+  }
+}
+
+```
+
+```{r function-model_anova, echo=FALSE, warning=FALSE, message=FALSE}
+model_data <- long_data %>%
+  select(-c("total_time", "correct_answers", "incorrect_answers", "administrated_questions", "variable",))
+
+# Check the design with ezDesign
+ezDesign(
+  data = model_data,
+  dv = performance_z,
+  wid = uid,
+  within = .(test, modality)
+)
+
+# Define the ANOVA function
+model_anova <- function(model_data) {
+  require(ez)
+  
+  res <- ezANOVA(
+    data = model_data,
+    dv = .(performance_z),         # Dependent variable
+    wid = .(uid),      # Subject identifier
+    within = .(test, modality),  # Within-subject factors
+    detailed = TRUE,
+    type = 3               # Type III sum of squares for unbalanced designs
+  )
+  
+  return(res)
+}
+
+# Perform the ANOVA
+anova_results <- model_anova(model_data)
+
+# Display the ANOVA results
+print(anova_results)
+
+```
+
+```{r call-model_anova, echo=FALSE, warning=FALSE, message=FALSE}
+anova_res <- model_anova(model_data)
+print(anova_results)
+```
+
+# Need full dataset, currently missing a few observations
+# Overall the data will contain a few more samples than required, but the data also contains outliers. So would I go about this by using the full data and removing the outliers, or do I keep myself to the required 39 and remove outliers out of those observations?
