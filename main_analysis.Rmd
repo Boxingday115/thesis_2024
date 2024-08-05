@@ -12,9 +12,6 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r library, echo=FALSE, warning=FALSE, message=FALSE}
 library(tidyverse)
 library(ggplot2)
-library(purrr)
-library(magrittr)
-library(stringr)
 library(caret)
 library(knitr)
 library(kableExtra)
@@ -24,6 +21,10 @@ library(corrplot)
 library(moments)
 library(ez)
 library(ggpubr)
+library(patchwork) # for plot wrapping 
+library(car) # for aov
+library(lsr) # for eta squared
+library(effsize) # for effect-sizes of t.test
 ```
 
 ```{r function-load_csv_data, echo=FALSE, warning=FALSE, message=FALSE}
@@ -44,7 +45,6 @@ load_xlsx <- function(file_path, sheet) {
 ```
 ```{r call-load-data, echo=FALSE}
 wcst_pc <- load_xlsx("Data_bucket/final_data.xlsx", 2)
-print(unique(wcst_pc$first_name))
 wcst_phone <- load_xlsx("Data_bucket/final_data.xlsx", 3)
 
 # Function to check uid consistency between two data frames
@@ -54,7 +54,11 @@ check_uid_consistency <- function(df1, df2) {
   all(uids_df1 %in% uids_df2) && all(uids_df2 %in% uids_df1)
 }
 
-check_uid_consistency(wcst_pc, wcst_phone)
+if (check_uid_consistency(wcst_pc, wcst_phone)) {
+  print("ID columns match 1-1 in both datasets")
+} else {
+  print("ID columns do not match 1-1 in both datasets")
+}
  
 full_data <- bind_rows(wcst_pc, wcst_phone) %>%
   select(-first_name)
@@ -63,116 +67,235 @@ full_data <- bind_rows(wcst_pc, wcst_phone) %>%
 ```{r function-summarise_descriptives, echo=FALSE, warning=FALSE, message=FALSE}
 # Calculate descriptive statistics
 
-summarised_pc <- wcst_pc %>% 
-  summarise(
-    "Modality" = first(modality),
-    "Mean Categories Completed" = round(mean(correct_answers, na.rm = TRUE), 3),
-    "Mean Trails 1st" = round(mean(trails_first_category, na.rm = TRUE), 3),
-    "Mean CLR %" = round(mean(clr_percent, na.rm = TRUE), 3) * 100,
-    "Mean P - Errors" = round(mean(p_error, na.rm = TRUE), 3),
-    "Mean Non - P Errors" = round(mean(non_p_error, na.rm = TRUE), 3),
-    "Mean Error Rate" = round(mean(error_rate, na.rm = TRUE), 3) * 100,
-    "Mean # of Questions" = round(mean(administrated_questions, na.rm = TRUE), 3),
-    "Mean Time Used" = round(mean(total_time, na.rm = TRUE), 3)
-  )
+compute_descriptives <- function(dataframe, all_groups = FALSE) {
+  # Determine the grouping variables
+  groups <- if (all_groups) c("modality", "group") else "modality"
+  
+  # Define the columns to summarize
+  columns_to_summarize <- c("total_time", "p_error", "non_p_error", 
+                            "trails_first_category", "clr_percent", 
+                            "correct_answers", "administrated_questions", 
+                            "error_rate")
+  
+  # Summarize the data
+  summarised_data <- dataframe %>%
+    group_by(across(all_of(groups))) %>%
+    summarise(across(
+      all_of(columns_to_summarize),
+      list(
+        Mean = ~round(mean(.x, na.rm = TRUE), 3),
+        Median = ~round(median(.x, na.rm = TRUE), 3),
+        SD = ~round(sd(.x, na.rm = TRUE), 3)
+      ),
+      .names = "{.col}_{.fn}"
+    ), .groups = 'drop') %>%
+    pivot_longer(
+      cols = ends_with("_Mean") | ends_with("_Median") | ends_with("_SD"),
+      names_to = c("Variable", ".value"),
+      names_pattern = "(.*)_(Mean|Median|SD)"
+    )
+  
+  return(summarised_data)
+}
 
-summarised_phone <- wcst_phone %>% 
-  summarise(
-    "Modality" = first(modality),
-    "Mean Categories Completed" = round(mean(correct_answers, na.rm = TRUE), 3),
-    "Mean Trails 1st" = round(mean(trails_first_category, na.rm = TRUE), 3),
-    "Mean CLR %" = round(mean(clr_percent, na.rm = TRUE), 3) * 100,
-    "Mean P - Errors" = round(mean(p_error, na.rm = TRUE), 3),
-    "Mean Non - P Errors" = round(mean(non_p_error, na.rm = TRUE), 3),
-    "Mean Error Rate" = round(mean(error_rate, na.rm = TRUE), 3) * 100,
-    "Mean # of Questions" = round(mean(administrated_questions, na.rm = TRUE), 3),
-    "Mean Time Used" = round(mean(total_time, na.rm = TRUE), 3)
-  )
-    
-   
-summarised_data <- bind_rows(summarised_pc, summarised_phone)
-print(summarised_data)
+# Full dataset summarization, based on modality grouping
+summarised_data <- compute_descriptives(full_data)
+
+# Dataset summarization based on modality + grouping variable 
+summarised_data_groups <- compute_descriptives(full_data, all_groups = TRUE) 
+
 ```
 
 ```{r call-create-boxplot, echo=FALSE, warning=FALSE, message=FALSE}
-# Function to create a boxplot
-create_boxplot <- function(full_data, y_var) {
+
+# Function to create a combined boxplot with specified order
+create_combined_boxplot <- function(full_data, y_vars) {
   
-  # Calculate mean and standard deviation
-  mean_value <- round(mean(full_data[[y_var]], na.rm = TRUE), 2)
-  sd_value <- round(sd(full_data[[y_var]], na.rm = TRUE), 2)
+  # Ensure the variables are ordered as specified in y_vars
+  y_vars_ordered <- factor(y_vars, levels = y_vars)
   
-  plot <- ggplot(full_data, aes(x = modality, y = .data[[y_var]], fill = modality)) +
+  # Create a new data frame with a 'variable' column for faceting
+  plot_data <- full_data %>%
+    pivot_longer(cols = all_of(y_vars), names_to = "variable", values_to = "value") %>%
+    mutate(variable = factor(variable, levels = y_vars))
+  
+  # Create the plot with faceting
+  plot <- ggplot(plot_data, aes(x = modality, y = value, fill = modality)) +
     geom_boxplot() +
+    facet_wrap(~ variable, scales = "free", ncol = 2) +
     theme_minimal() +
     theme(legend.position = "none") +  # Remove legend
     labs(
-      title = print(paste0("Boxplot of ", y_var, "by modality")),
-      y = y_var,
+      y = "Value",
       x = "Modality"
-    ) +
-    annotate("text", x = Inf, y = Inf, label = paste("Mean =", mean_value), color = "black", hjust = 1.1, vjust = 2) +
-    annotate("text", x = Inf, y = Inf, label = paste("SD =", sd_value), color = "black", hjust = 1.1, vjust = 3)
+    )
   
+  # Print the plot
   print(plot)
 }
 
-# Assuming full_data is the combined dataframe from the previous step
-create_boxplot(full_data, "correct_answers")
-create_boxplot(full_data, "administrated_questions")
-create_boxplot(full_data, "error_rate")
-create_boxplot(full_data, "p_error")
-create_boxplot(full_data, "non_p_error")
-create_boxplot(full_data, "clr_percent")
-create_boxplot(full_data, "trails_first_category")
+# List of variables to plot
+y_vars <- c("clr_percent", "trails_first_category")
+
+# Create the combined boxplot
+create_combined_boxplot(full_data, y_vars)
+
+y_vars <- c("p_error", "non_p_error")
+
+create_combined_boxplot(full_data, y_vars)
+
 ```
 
 ```{r call-create-histograms, echo=FALSE, warning=FALSE, message=FALSE}
-create_histograms <- function(full_data, x_var) {
-  
-  # Calculate binwidth using Freedman-Diaconis rule
-  bins <- round(sqrt(length(full_data[[x_var]])))
-  
-  # Define custom colors for the modalities
-  custom_colors <- c("pc" = "steelblue", "phone" = "forestgreen")
-  
-  plot <- ggplot(full_data, aes(x = .data[[x_var]], fill = modality)) +
-    geom_histogram(bins = bins, alpha = 0.7, position = "identity") +
-    facet_grid(vars(modality)) +
-    scale_fill_manual(values = custom_colors) +
-    theme_minimal() +
-    labs(
-      title = paste("Distribution of", x_var),
-      x = x_var,
-      y = "Count"
-    )
-  
-  print(plot)
+create_histogram <- function(full_data, var) {
+    # Calculate the binwidth using the Freedman-Diaconis rule, handling NA values correctly
+    data_non_na <- na.omit(full_data[[var]])  # Remove NA values from data for calculation
+    bin_width <- 2 * IQR(data_non_na) / (length(data_non_na)^(1/3))
+    
+    # Define custom colors for modalities
+    custom_colors <- c("pc" = "steelblue", "phone" = "forestgreen")
+
+    # Create the histogram plot
+    plot <- ggplot(full_data, aes(x = .data[[var]], fill = modality)) +
+        geom_histogram(binwidth = bin_width, alpha = 0.7, position = "identity", color = "black") +
+        scale_fill_manual(values = custom_colors) +
+        theme_minimal() +
+        labs(
+            x = var,
+            y = "Count"
+        )
+    return(plot)
 }
 
-create_histograms(full_data, "correct_answers")
-create_histograms(full_data, "administrated_questions")
-create_histograms(full_data, "error_rate")
-create_histograms(full_data, "p_error")
-create_histograms(full_data, "non_p_error")
-create_histograms(full_data, "clr_percent")
-create_histograms(full_data, "trails_first_category")
 
+# Plots for correct answer behaviour
+
+# Variables to plot
+vars_to_plot <- c("clr_percent", "trails_first_category")
+
+# Create individual histograms
+plots <- lapply(vars_to_plot, function(var) create_histogram(full_data, var))
+
+# Combine plots using patchwork
+combined_plot <- wrap_plots(plots, ncol = 2)
+
+# Print the combined plot
+print(combined_plot)
+
+# Plots for Error Response behaviour
+
+# Variables to plot
+vars_to_plot <- c("p_error", "non_p_error")
+
+# Create individual histograms
+plots <- lapply(vars_to_plot, function(var) create_histogram(full_data, var))
+
+# Combine plots using patchwork
+combined_plot <- wrap_plots(plots, ncol = 2)
+
+# Print the combined plot
+print(combined_plot)
+
+```
+
+```{r create_group_table, echo=FALSE, warning=FALSE, message=FALSE}
+group_sizes <- table(full_data$modality, full_data$group)
+print(group_sizes)
 ```
 
 ```{r function-model_anova, echo=FALSE, warning=FALSE, message=FALSE}
 model_anova <- function(dataset, response_variable) {
   set.seed(741)
   
-  res <- aov(dataset[[response_variable]] ~ modality*group + Error(uid/modality), data = dataset)
-
-  return(res)
+  mod <- lm(dataset[[response_variable]] ~ modality * group, dataset)
+  
+  aov_res <- Anova(mod, type = 2)
+  
+  lev_res <- leveneTest(mod)
+  
+  residuals <- residuals(mod)
+  
+  eta_res <- etaSquared(mod, type = 2)
+  
+  return(list(aov_res, lev_res, residuals, eta_res))
 }
 ```
 ```{r call-model_anova, echo=FALSE, warning=FALSE, message=FALSE}
 
-p_error_aov <- model_anova(full_data, "p_error")
-print(summary(p_error_aov))
+aov_data <- full_data %>%
+  mutate(
+    modality = as.factor(modality),
+    group = as.factor(group)
+  )
+
+clr_aov <- model_anova(aov_data, "clr_percent")
+print(clr_aov[[1]]) # Anova res
+print(clr_aov[[2]]) # Levene's test 
+qqnorm(clr_aov[[3]]) # Residuals plot
+print(clr_aov[[4]]) # Eta squared res 
+
+
+trails_aov <- model_anova(aov_data, "trails_first_category")
+print(trails_aov[[1]]) # Anova res
+print(trails_aov[[2]]) # Levene's test 
+qqnorm(trails_aov[[3]]) # Residuals plot
+print(trails_aov[[4]]) # Eta squared res 
+
+# Residuals does not follow a normal distribution, we will log transform and re-fit the model 
+aov_data <- aov_data %>%
+  mutate(
+    trails_first_category_log = log(trails_first_category)
+  )
+
+trails_logged_aov <- model_anova(aov_data, "trails_first_category_log")
+print(trails_logged_aov[[1]]) # Anova res
+print(trails_logged_aov[[2]]) # Levene's test 
+qqnorm(trails_logged_aov[[3]]) # Residuals plot
+print(trails_logged_aov[[4]]) # Eta squared res 
+
+p_error_aov <- model_anova(aov_data, "p_error")
+print(p_error_aov[[1]]) # Anova res
+print(p_error_aov[[2]]) # Levene's test 
+qqnorm(p_error_aov[[3]]) # Residuals plot
+print(p_error_aov[[4]]) # Eta squared res 
+
+
+non_p_aov <- model_anova(aov_data, "non_p_error")
+print(non_p_aov[[1]]) # Anova res
+print(non_p_aov[[2]]) # Levene's test 
+qqnorm(non_p_aov[[3]]) # Residuals plot
+print(non_p_aov[[4]]) # Eta squared res 
+```
+
+**Post-Hoc Test**
+Provided that there was a significant main-effect of modality on the number of PEs made between the conditions, a paired-samples t-test is used to further analyze these differences. 
+
+```{r post-hoc analysis, echo=FALSE, message=FALSE, warning=FALSE}
+t_res <- t.test(p_error ~ modality, data = aov_data, paired = TRUE)
+print(t_res)
+
+cohen_d <- cohen.d(p_error ~ modality, data = aov_data, paired = TRUE)
+print(cohen_d)
+```
+
+```{r produce-bland_altman_plot, echo=FALSE, message=FALSE, warning=FALSE}
+# Calculate differences
+aov_data_diff <- aov_data %>%
+  group_by(uid) %>%
+  summarize(
+    difference = p_error[modality == "phone"] - p_error[modality == "pc"]
+  )
+
+
+# Create a paired differences plot
+ggplot(aov_data_diff, aes(x = uid, y = difference)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Paired Differences in Perseverative Errors by Participant",
+       x = "Participant ID",
+       y = "Difference in Perseverative Errors (Smartphone - Computer)") +
+  theme_minimal()
+
 ```
 
 ```{r function-outlier_analysis, echo=FALSE, message=FALSE, warning=FALSE}
@@ -193,85 +316,42 @@ print(outliers)
 # Either way sample to low :()
 
 ```
-Anova Normality Check
-```{r print_qq_plot, echo=FALSE, warning=FALSE, message=FALSE}
-# Assuming your dataframe is named long_data
-unique_tasks <- unique(model_data$test)
-unique_conditions <- unique(model_data$modality)
 
-# Set up the plot layout to 2x2
-par(mfrow = c(1, 2))
+```{r compute_pearson_correlations, echo=FALSE, message=FALSE, warning=FALSE}
 
-# Loop through each task and condition
-for (task in unique_tasks) {
-  for (condition in unique_conditions) {
-    subset_data <- subset(model_data, test == task & modality == condition)
-    qqnorm(subset_data$value, main = paste("QQ Plot", task, ",", condition))
-    qqline(subset_data$value, col = "red")
-    if (condition == unique_conditions[length(unique_conditions)] && task == unique_tasks[length(unique_tasks)]) {
-      par(mfrow = c(1, 2))  # Reset for the next page
-    }
-  }
-}
-```
+# Reshape data for paired observations (wide format)
+wide_data <- aov_data %>% 
+  select(uid, modality, p_error, non_p_error, trails_first_category, clr_percent) %>%
+  pivot_wider(
+    names_from = modality,
+    values_from = c(p_error, non_p_error, trails_first_category, clr_percent)
+  )
 
-```{r perform-shapiro, echo=FALSE, warning=FALSE, message=FALSE}
-# Assuming your dataframe is named long_data
-unique_tasks <- unique(model_data$test)
-unique_conditions <- unique(model_data$modality)
-
-# Perform Shaprio-test
-# Loop through each task and condition
-for (task in unique_tasks) {
-  for (condition in unique_conditions) {
-    subset_data <- subset(model_data, test == task & modality == condition)
-    res <- shapiro.test(subset_data$performance_z)
-    print(res)
-  }
-}
-
-```
-
-```{r function-model_anova, echo=FALSE, warning=FALSE, message=FALSE}
-model_data <- long_data %>%
-  select(-c("total_time", "correct_answers", "incorrect_answers", "administrated_questions", "variable",))
-
-# Check the design with ezDesign
-ezDesign(
-  data = model_data,
-  dv = performance_z,
-  wid = uid,
-  within = .(test, modality)
+# Calculate correlations
+correlations <- data.frame(
+  variable = c("PE", "NPE", "FC", "%CLR"),
+  correlation = c(
+    cor(wide_data$p_error_pc, wide_data$p_error_phone),
+    cor(wide_data$non_p_error_pc, wide_data$non_p_error_phone),
+    cor(wide_data$clr_percent_pc, wide_data$clr_percent_phone),
+    cor(wide_data$trails_first_category_pc, wide_data$trails_first_category_phone)
+  )
 )
 
-# Define the ANOVA function
-model_anova <- function(model_data) {
-  require(ez)
-  
-  res <- ezANOVA(
-    data = model_data,
-    dv = .(performance_z),         # Dependent variable
-    wid = .(uid),      # Subject identifier
-    within = .(test, modality),  # Within-subject factors
-    detailed = TRUE,
-    type = 3               # Type III sum of squares for unbalanced designs
-  )
-  
-  return(res)
-}
+print(correlations)
 
-# Perform the ANOVA
-anova_results <- model_anova(model_data)
+# Visualize correlations
+ggplot(correlations, aes(x = variable, y = correlation)) +
+  geom_bar(stat = "identity", fill = "darkblue", alpha = 0.7) +
+  geom_text(aes(label = round(correlation, 2)), vjust = -0.5) +
+  ylim(0, 1) +
+  labs(title = "Correlations between Computer and Smartphone Modalities",
+       x = "Variable",
+       y = "Pearson Correlation") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-# Display the ANOVA results
-print(anova_results)
+
 
 ```
 
-```{r call-model_anova, echo=FALSE, warning=FALSE, message=FALSE}
-anova_res <- model_anova(model_data)
-print(anova_results)
-```
-
-# Need full dataset, currently missing a few observations
-# Overall the data will contain a few more samples than required, but the data also contains outliers. So would I go about this by using the full data and removing the outliers, or do I keep myself to the required 39 and remove outliers out of those observations?
