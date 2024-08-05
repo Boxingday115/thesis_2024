@@ -327,17 +327,22 @@ wide_data <- aov_data %>%
     values_from = c(p_error, non_p_error, trails_first_category, clr_percent)
   )
 
-# Calculate correlations
+# Calculate correlations using cor.test
+pe_cor <- cor.test(wide_data$p_error_pc, wide_data$p_error_phone)
+npe_cor <- cor.test(wide_data$non_p_error_pc, wide_data$non_p_error_phone)
+fc_cor <- cor.test(wide_data$trails_first_category_pc, wide_data$trails_first_category_phone)
+clr_cor <- cor.test(wide_data$clr_percent_pc, wide_data$clr_percent_phone)
+
+# Create a data frame to store the results
 correlations <- data.frame(
   variable = c("PE", "NPE", "FC", "%CLR"),
-  correlation = c(
-    cor(wide_data$p_error_pc, wide_data$p_error_phone),
-    cor(wide_data$non_p_error_pc, wide_data$non_p_error_phone),
-    cor(wide_data$clr_percent_pc, wide_data$clr_percent_phone),
-    cor(wide_data$trails_first_category_pc, wide_data$trails_first_category_phone)
-  )
+  correlation = c(pe_cor$estimate, npe_cor$estimate, fc_cor$estimate, clr_cor$estimate),
+  p_value = c(pe_cor$p.value, npe_cor$p.value, fc_cor$p.value, clr_cor$p.value),
+  conf_lower = c(pe_cor$conf.int[1], npe_cor$conf.int[1], fc_cor$conf.int[1], clr_cor$conf.int[1]),
+  conf_upper = c(pe_cor$conf.int[2], npe_cor$conf.int[2], fc_cor$conf.int[2], clr_cor$conf.int[2])
 )
 
+# Print correlations
 print(correlations)
 
 # Visualize correlations
