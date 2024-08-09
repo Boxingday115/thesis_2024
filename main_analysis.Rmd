@@ -7,24 +7,22 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+set.seed(741)
 ```
 
 ```{r library, echo=FALSE, warning=FALSE, message=FALSE}
-library(tidyverse)
-library(ggplot2)
-library(caret)
-library(knitr)
-library(kableExtra)
-library(rstatix)
-library(stats)
-library(corrplot)
-library(moments)
-library(ez)
-library(ggpubr)
-library(patchwork) # for plot wrapping 
+library(tidyverse) # For data wrangling / manipulation
+library(ggpubr) # For data visualizations
+library(patchwork) # For plot wrapping 
+library(rstatix) # For levenesTest
+library(ez) # For ANOVA
+library(stats) # For t.test
+library(effsize) # For post-hoc analysis of t.tests
+library(corrplot) # For correlation measures
+
+# Needed?
 library(car) # for aov
 library(lsr) # for eta squared
-library(effsize) # for effect-sizes of t.test
 ```
 
 ```{r function-load_csv_data, echo=FALSE, warning=FALSE, message=FALSE}
@@ -43,247 +41,375 @@ load_xlsx <- function(file_path, sheet) {
   return(data)
 }
 ```
-```{r call-load-data, echo=FALSE}
+```{r call-load-data, echo=FALSE, warning=FALSE, message=FALSE}
 wcst_pc <- load_xlsx("Data_bucket/final_data.xlsx", 2)
 wcst_phone <- load_xlsx("Data_bucket/final_data.xlsx", 3)
+```
 
+```{r function-check_data_consistency, echo=FALSE, warning=FALSE, message=FALSE}
 # Function to check uid consistency between two data frames
 check_uid_consistency <- function(df1, df2) {
   uids_df1 <- unique(df1$uid)
   uids_df2 <- unique(df2$uid)
   all(uids_df1 %in% uids_df2) && all(uids_df2 %in% uids_df1)
 }
-
+```
+```{r call-check_data_consistency, echo=FALSE, warning=FALSE, message=FALSE}
 if (check_uid_consistency(wcst_pc, wcst_phone)) {
   print("ID columns match 1-1 in both datasets")
 } else {
   print("ID columns do not match 1-1 in both datasets")
 }
- 
-full_data <- bind_rows(wcst_pc, wcst_phone) %>%
-  select(-first_name)
+```
+
+```{r call-merge_data, echo=FALSE, warning=FALSE, message=FALSE}
+long_data <- bind_rows(wcst_pc, wcst_phone) %>%
+  select(-c(first_name, p_error_prop, non_p_prop, incorrect_answers, conceptual_level_responses)) %>%
+  rename(
+    "PE" = "p_error",
+    "NPE" = "non_p_error",
+    "FC" = "trails_first_category",
+    "CLR" = "clr_percent"
+  )
 ```
 
 ```{r function-summarise_descriptives, echo=FALSE, warning=FALSE, message=FALSE}
-# Calculate descriptive statistics
 
-compute_descriptives <- function(dataframe, all_groups = FALSE) {
-  # Determine the grouping variables
-  groups <- if (all_groups) c("modality", "group") else "modality"
+compute_descriptives <- function(long_data, target_var) {
+  
+  # Using enquo to capture the target variable name
+  target_var <- rlang::enquo(target_var)
+  
+  summary_data <- long_data %>%
+    group_by(modality, group) %>%
+    get_summary_stats(!!target_var, type = "full") %>%
+    ungroup() %>%
+    as.data.frame()
+  
+ return(summary_data) 
+}
+```
+
+```{r call-summarise_descriptives, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Initial performance metrics 
+corr_answers_desc <- compute_descriptives(long_data, "correct_answers")
+
+error_rate_desc <- compute_descriptives(long_data, "error_rate")
+
+admin_questions_desc <- compute_descriptives(long_data, "administrated_questions")
+
+time_desc <- compute_descriptives(long_data, "total_time")
+
+# Executive Functioning 
+fc_desc <- compute_descriptives(long_data, "FC")
+
+clr_desc <- compute_descriptives(long_data, "CLR")
+
+pe_desc <- compute_descriptives(long_data, "PE")
+
+npe_desc <- compute_descriptives(long_data, "NPE")
+
+```
+
+```{r function-compute_inbetween_descriptives, echo=FALSE, warning=FALSE, message=FALSE}
+
+# If needed / wanted 
+
+compute_inbetween_descriptives <- function(dataframe) {
+  # Remove any existing grouping to start fresh
+  dataframe <- dataframe %>% ungroup()
   
   # Define the columns to summarize
-  columns_to_summarize <- c("total_time", "p_error", "non_p_error", 
-                            "trails_first_category", "clr_percent", 
+  columns_to_summarize <- c("total_time", "PE", "NPE", 
+                            "FC", "CLR", 
                             "correct_answers", "administrated_questions", 
                             "error_rate")
   
   # Summarize the data
   summarised_data <- dataframe %>%
-    group_by(across(all_of(groups))) %>%
-    summarise(across(
-      all_of(columns_to_summarize),
-      list(
-        Mean = ~round(mean(.x, na.rm = TRUE), 3),
-        Median = ~round(median(.x, na.rm = TRUE), 3),
-        SD = ~round(sd(.x, na.rm = TRUE), 3)
+    group_by(modality) %>%
+    summarise(
+      across(
+        all_of(columns_to_summarize),
+        list(
+          Mean = ~round(mean(.x, na.rm = TRUE), 3),
+          Median = ~round(median(.x, na.rm = TRUE), 3),
+          SD = ~round(sd(.x, na.rm = TRUE), 3)
+        ),
+        .names = "{.col}_{.fn}"
       ),
-      .names = "{.col}_{.fn}"
-    ), .groups = 'drop') %>%
+      .groups = 'drop' # Drop the grouping after summarization
+    ) %>%
     pivot_longer(
-      cols = ends_with("_Mean") | ends_with("_Median") | ends_with("_SD"),
+      cols = matches(".*_(Mean|Median|SD)$"),
       names_to = c("Variable", ".value"),
       names_pattern = "(.*)_(Mean|Median|SD)"
-    )
+    ) 
   
   return(summarised_data)
 }
-
+```
+```{r call-compute_inbetween_descriptives, echo=FALSE, warning=FALSE, message=FALSE}
 # Full dataset summarization, based on modality grouping
-summarised_data <- compute_descriptives(full_data)
-
-# Dataset summarization based on modality + grouping variable 
-summarised_data_groups <- compute_descriptives(full_data, all_groups = TRUE) 
-
+summarised_inbetween <- compute_inbetween_descriptives(long_data)
 ```
 
 ```{r call-create-boxplot, echo=FALSE, warning=FALSE, message=FALSE}
 
-# Function to create a combined boxplot with specified order
-create_combined_boxplot <- function(full_data, y_vars) {
+create_combined_boxplot <- function(long_data, y_var) {
   
-  # Ensure the variables are ordered as specified in y_vars
-  y_vars_ordered <- factor(y_vars, levels = y_vars)
+  # Check that y_var is a valid column in long_data
+  if (!y_var %in% names(long_data)) {
+    stop(paste("Variable", y_var, "not found in the data frame"))
+  }
   
-  # Create a new data frame with a 'variable' column for faceting
-  plot_data <- full_data %>%
-    pivot_longer(cols = all_of(y_vars), names_to = "variable", values_to = "value") %>%
-    mutate(variable = factor(variable, levels = y_vars))
+  # Convert the y_var to a symbol for dplyr to use
+  y_var_sym <- sym(y_var)
   
-  # Create the plot with faceting
-  plot <- ggplot(plot_data, aes(x = modality, y = value, fill = modality)) +
-    geom_boxplot() +
-    facet_wrap(~ variable, scales = "free", ncol = 2) +
+  # Create the plot with interaction of group and modality for side-by-side boxplots
+  plot <- ggplot(long_data, aes(x = interaction(modality, group, sep = " - "), y = !!y_var_sym, fill = modality)) +
+    geom_boxplot(position = position_dodge(width = 0.9)) +
     theme_minimal() +
-    theme(legend.position = "none") +  # Remove legend
+    scale_x_discrete(name = NULL) +  # Remove x-axis name and labels
+    theme(
+      legend.position = "none",  # Hide the legend
+      strip.text = element_blank()  # Optionally, remove facet labels if any
+    ) +
     labs(
-      y = "Value",
-      x = "Modality"
+      y = y_var  # Set y-axis label
     )
   
   # Print the plot
   print(plot)
 }
 
-# List of variables to plot
-y_vars <- c("clr_percent", "trails_first_category")
+create_combined_boxplot(long_data, "FC")
 
-# Create the combined boxplot
-create_combined_boxplot(full_data, y_vars)
+create_combined_boxplot(long_data, "CLR")
 
-y_vars <- c("p_error", "non_p_error")
+create_combined_boxplot(long_data, "PE")
 
-create_combined_boxplot(full_data, y_vars)
-
+create_combined_boxplot(long_data, "NPE")
 ```
 
-```{r call-create-histograms, echo=FALSE, warning=FALSE, message=FALSE}
-create_histogram <- function(full_data, var) {
-    # Calculate the binwidth using the Freedman-Diaconis rule, handling NA values correctly
-    data_non_na <- na.omit(full_data[[var]])  # Remove NA values from data for calculation
-    bin_width <- 2 * IQR(data_non_na) / (length(data_non_na)^(1/3))
-    
-    # Define custom colors for modalities
-    custom_colors <- c("pc" = "steelblue", "phone" = "forestgreen")
-
-    # Create the histogram plot
-    plot <- ggplot(full_data, aes(x = .data[[var]], fill = modality)) +
-        geom_histogram(binwidth = bin_width, alpha = 0.7, position = "identity", color = "black") +
-        scale_fill_manual(values = custom_colors) +
-        theme_minimal() +
-        labs(
-            x = var,
-            y = "Count"
-        )
-    return(plot)
-}
-
-
-# Plots for correct answer behaviour
-
-# Variables to plot
-vars_to_plot <- c("clr_percent", "trails_first_category")
-
-# Create individual histograms
-plots <- lapply(vars_to_plot, function(var) create_histogram(full_data, var))
-
-# Combine plots using patchwork
-combined_plot <- wrap_plots(plots, ncol = 2)
-
-# Print the combined plot
-print(combined_plot)
-
-# Plots for Error Response behaviour
-
-# Variables to plot
-vars_to_plot <- c("p_error", "non_p_error")
-
-# Create individual histograms
-plots <- lapply(vars_to_plot, function(var) create_histogram(full_data, var))
-
-# Combine plots using patchwork
-combined_plot <- wrap_plots(plots, ncol = 2)
-
-# Print the combined plot
-print(combined_plot)
-
-```
-
-```{r create_group_table, echo=FALSE, warning=FALSE, message=FALSE}
+```{r create-contigency_table, echo=FALSE, warning=FALSE, message=FALSE}
 group_sizes <- table(full_data$modality, full_data$group)
 print(group_sizes)
 ```
 
-```{r function-model_anova, echo=FALSE, warning=FALSE, message=FALSE}
-model_anova <- function(dataset, response_variable) {
-  set.seed(741)
-  
-  mod <- lm(dataset[[response_variable]] ~ modality * group, dataset)
-  
-  aov_res <- Anova(mod, type = 2)
-  
-  lev_res <- leveneTest(mod)
-  
-  residuals <- residuals(mod)
-  
-  eta_res <- etaSquared(mod, type = 2)
-  
-  return(list(aov_res, lev_res, residuals, eta_res))
-}
-```
-```{r call-model_anova, echo=FALSE, warning=FALSE, message=FALSE}
-
-aov_data <- full_data %>%
+```{r create-factor_columns, echo=FALSE, warning=FALSE, message=FALSE}
+aov_data <- long_data %>%
   mutate(
     modality = as.factor(modality),
     group = as.factor(group)
-  )
-
-clr_aov <- model_anova(aov_data, "clr_percent")
-print(clr_aov[[1]]) # Anova res
-print(clr_aov[[2]]) # Levene's test 
-qqnorm(clr_aov[[3]]) # Residuals plot
-print(clr_aov[[4]]) # Eta squared res 
-
-
-trails_aov <- model_anova(aov_data, "trails_first_category")
-print(trails_aov[[1]]) # Anova res
-print(trails_aov[[2]]) # Levene's test 
-qqnorm(trails_aov[[3]]) # Residuals plot
-print(trails_aov[[4]]) # Eta squared res 
-
-# Residuals does not follow a normal distribution, we will log transform and re-fit the model 
-aov_data <- aov_data %>%
-  mutate(
-    trails_first_category_log = log(trails_first_category)
-  )
-
-trails_logged_aov <- model_anova(aov_data, "trails_first_category_log")
-print(trails_logged_aov[[1]]) # Anova res
-print(trails_logged_aov[[2]]) # Levene's test 
-qqnorm(trails_logged_aov[[3]]) # Residuals plot
-print(trails_logged_aov[[4]]) # Eta squared res 
-
-p_error_aov <- model_anova(aov_data, "p_error")
-print(p_error_aov[[1]]) # Anova res
-print(p_error_aov[[2]]) # Levene's test 
-qqnorm(p_error_aov[[3]]) # Residuals plot
-print(p_error_aov[[4]]) # Eta squared res 
-
-
-non_p_aov <- model_anova(aov_data, "non_p_error")
-print(non_p_aov[[1]]) # Anova res
-print(non_p_aov[[2]]) # Levene's test 
-qqnorm(non_p_aov[[3]]) # Residuals plot
-print(non_p_aov[[4]]) # Eta squared res 
+    )
 ```
+
+```{r function-detect_outliers, echo=FALSE, warning=FALSE, message=FALSE}
+detect_outliers <- function(x, multiplier = 2.5) {
+  q1 <- quantile(x, 0.25, na.rm = TRUE)
+  q3 <- quantile(x, 0.75, na.rm = TRUE)
+  iqr <- q3 - q1
+  lower_bound <- q1 - multiplier * iqr
+  upper_bound <- q3 + multiplier * iqr
+  x < lower_bound | x > upper_bound
+}
+```
+
+
+```{r FC-Anova, echo=FALSE, warning=FALSE, message=FALSE}
+
+# We saw based on the previous boxplots that there were in total 5 significant outliers in the FC variable which is problematic for the ANOVA and we therefore have to remove these. 
+fc_data <- aov_data %>%
+  group_by(modality, group) %>%
+  mutate(is_outlier = detect_outliers(FC)) %>% # Instead of using the function I am manually defining it based on the boxplot 
+  ungroup() %>%
+  filter(!(uid %in% uid[is_outlier]))  # Remove rows with outlier uids so the within-subject design remains consistent 
+  
+# After removing outliers our total sample size is 34 split as: 26 / 8 which is just enough to allow it to be modeled based on our power analysis 
+group_sizes <- table(fc_data$modality, fc_data$group)
+print(group_sizes)
+
+# Test Normality Assumption
+ggqqplot(fc_data, "FC") + facet_grid(group ~ modality)
+
+# The QQplot is not approximately normally distributed, tails are very heavy even after outlier removal. We can invoke the central limit theorem but given that the sample size is just shy of > 30 I feel more comfortable attempting a log transformation first 
+
+# Log transforming FC 
+fc_data <- fc_data %>%
+  mutate(
+    FC_log = log(FC)
+  )
+
+# Test Normality Assumption with log-transformed FC 
+ggqqplot(fc_data, "FC_log") + facet_grid(group ~ modality) # its better, still not really normally distributed but at this point we can invoke CLM
+
+# Test Homogeneity of variances
+fc_levene_res <- fc_data %>%
+  group_by(modality) %>%
+  levene_test(FC_log~group)
+
+# Test of homogeneity passes 
+print(fc_levene_res)
+
+# We dont need to conduct a Mauchly's Test because our between-subject factor is < 3
+
+# With our assumptions met we can model the ANOVA 
+# Conduct the mixed-design factorial ANOVA for FC 
+fc_res <- ezANOVA(
+  data = fc_data,
+  dv = FC_log, 
+  wid = uid, # Within-subjects identifier
+  within = modality, # Within-subjects factor
+  between = group, # Between-subjects factor
+  type = 3 # Type III sums of squares
+)
+
+print(fc_res)
+
+# No significant main effects or interaction effects. 
+```
+
+```{r CLR-Anova, echo=FALSE, warning=FALSE, message=FALSE}
+# We saw based on the previous boxplots that there were in total 3 significant outliers in the CLR variable which is problematic for the ANOVA and we therefore have to remove these. 
+clr_data <- aov_data %>%
+  select(uid, modality, group, CLR) %>%
+  group_by(modality, group) %>%
+  mutate(is_outlier = detect_outliers(CLR)) %>%
+  ungroup() %>%
+  filter(!(uid %in% uid[is_outlier]))  # Remove rows with outlier uids so the within-subject design remains consistent 
+  
+# After removing outliers our total sample size is 37 split as: 31 / 9 
+group_sizes <- table(clr_data$modality, clr_data$group)
+print(group_sizes)
+
+# Test Normality Assumption, approximatley normal distribution, some deviations but CLM 
+ggqqplot(clr_data, "CLR") + facet_grid(group ~ modality)
+
+# Test Homogeneity of variances 
+clr_levene_res <- clr_data %>%
+  group_by(modality) %>%
+  levene_test(CLR~group)
+
+print(clr_levene_res) # Passed
+
+
+# Conduct the mixed-design factorial ANOVA for CLR 
+clr_res <- ezANOVA(
+  data = clr_data,
+  dv = CLR, 
+  wid = uid, # Within-subjects identifier
+  within = modality, # Within-subjects factor
+  between = group, # Between-subjects factor
+  type = 3 # Type III sums of squares
+)
+
+print(clr_res)
+
+# No sig effects at all 
+```
+
+```{r PE-Anova, echo=FALSE, warning=FALSE, message=FALSE}
+# We saw based on the previous boxplots that there were in total 1 significant outliers in PC group on PE but with no other outliers and this particular outlier being just considered an outlier I wont remove it (the participants PE was not > 1.5 * IQR)
+pe_data <- aov_data %>%
+  select(uid, modality, group, PE) %>%
+  group_by(modality, group) %>%
+  mutate(is_outlier = detect_outliers(PE)) %>%
+  ungroup() %>%
+  filter(!(uid %in% uid[is_outlier]))
+  
+# After removing outliers our total sample size is 37 split as: 28 / 9 
+group_sizes <- table(pe_data$modality, pe_data$group)
+print(group_sizes)
+
+# Test Normality Assumption, approximate, some light deviation in upper tail but CLM invoked 
+ggqqplot(pe_data, "PE") + facet_grid(group ~ modality)
+
+# Test Homogeneity of variances
+pe_levene_res <- pe_data %>%
+  group_by(modality) %>%
+  levene_test(PE~group)
+
+print(pe_levene_res)
+
+
+# Conduct the mixed-design factorial ANOVA for CLR 
+pe_res <- ezANOVA(
+  data = pe_data,
+  dv = PE, 
+  wid = uid, # Within-subjects identifier
+  within = modality, # Within-subjects factor
+  between = group, # Between-subjects factor
+  type = 3 # Type III sums of squares
+)
+
+print(pe_res)
+```
+
+```{r PE-Anova, echo=FALSE, warning=FALSE, message=FALSE}
+# We saw based on the previous boxplots that there were in total 1 significant outliers in PC group on PE but with no other outliers and this particular outlier being just considered an outlier I wont remove it (the participants PE was not > 1.5 * IQR)
+npe_data <- aov_data %>%
+  select(uid, modality, group, NPE) %>%
+  group_by(modality, group) %>%
+  mutate(is_outlier = detect_outliers(NPE)) %>%
+  ungroup() %>%
+  filter(!(uid %in% uid[is_outlier]))
+  
+# After removing outliers our total sample size is 37 split as: 28 / 9 
+group_sizes <- table(npe_data$modality, npe_data$group)
+print(group_sizes)
+
+# Test Normality Assumption, approximate, some light deviation in upper tail but CLM invoked 
+ggqqplot(npe_data, "NPE") + facet_grid(group ~ modality)
+
+npe_data <- npe_data %>%
+  mutate(
+    NPE_log = log(NPE)
+  )
+
+ggqqplot(npe_data, "NPE_log") + facet_grid(group ~ modality)
+
+
+# Test Homogeneity of variances
+npe_levene_res <- npe_data %>%
+  group_by(modality) %>%
+  levene_test(NPE_log~group)
+
+print(npe_levene_res)
+
+
+# Conduct the mixed-design factorial ANOVA for CLR 
+npe_res <- ezANOVA(
+  data = npe_data,
+  dv = NPE, 
+  wid = uid, # Within-subjects identifier
+  within = modality, # Within-subjects factor
+  between = group, # Between-subjects factor
+  type = 3 # Type III sums of squares
+)
+
+print(npe_res)
+```
+
 
 **Post-Hoc Test**
 Provided that there was a significant main-effect of modality on the number of PEs made between the conditions, a paired-samples t-test is used to further analyze these differences. 
 
 ```{r post-hoc analysis, echo=FALSE, message=FALSE, warning=FALSE}
-t_res <- t.test(p_error ~ modality, data = aov_data, paired = TRUE)
+t_res <- t.test(PE ~ modality, data = pe_data, paired = TRUE)
 print(t_res)
 
-cohen_d <- cohen.d(p_error ~ modality, data = aov_data, paired = TRUE)
+cohen_d <- cohen.d(PE ~ modality, data = pe_data, paired = TRUE)
 print(cohen_d)
 ```
 
 ```{r produce-bland_altman_plot, echo=FALSE, message=FALSE, warning=FALSE}
 # Calculate differences
-aov_data_diff <- aov_data %>%
+aov_data_diff <- pe_data %>%
   group_by(uid) %>%
   summarize(
-    difference = p_error[modality == "phone"] - p_error[modality == "pc"]
+    difference = PE[modality == "phone"] - PE[modality == "pc"]
   )
 
 
@@ -298,40 +424,22 @@ ggplot(aov_data_diff, aes(x = uid, y = difference)) +
 
 ```
 
-```{r function-outlier_analysis, echo=FALSE, message=FALSE, warning=FALSE}
-outlier_analysis <- function(long_data) {
-  outlier_data <- long_data %>%
-    group_by(test, modality) %>%
-    identify_outliers(value)
-  data.frame(outlier_data)
-  
-  return(outlier_data)
-}
-```
-```{r call-outlier_analysis, echo=FALSE, message=FALSE, warning=FALSE}
-outliers <- outlier_analysis(melted_data)
-print(outliers)
-
-# The data reveals some outliers / extreme cases, but then again these are Z-scores to I dont really think its valid to do an outlier analysis on them?
-# Either way sample to low :()
-
-```
-
 ```{r compute_pearson_correlations, echo=FALSE, message=FALSE, warning=FALSE}
 
 # Reshape data for paired observations (wide format)
 wide_data <- aov_data %>% 
-  select(uid, modality, p_error, non_p_error, trails_first_category, clr_percent) %>%
+  select(uid, modality, group, PE, NPE, FC, CLR) %>%
   pivot_wider(
     names_from = modality,
-    values_from = c(p_error, non_p_error, trails_first_category, clr_percent)
+    values_from = c(PE, NPE, FC, CLR)
   )
 
+
 # Calculate correlations using cor.test
-pe_cor <- cor.test(wide_data$p_error_pc, wide_data$p_error_phone)
-npe_cor <- cor.test(wide_data$non_p_error_pc, wide_data$non_p_error_phone)
-fc_cor <- cor.test(wide_data$trails_first_category_pc, wide_data$trails_first_category_phone)
-clr_cor <- cor.test(wide_data$clr_percent_pc, wide_data$clr_percent_phone)
+pe_cor <- cor.test(wide_data$PE_pc, wide_data$PE_phone)
+npe_cor <- cor.test(wide_data$NPE_pc, wide_data$NPE_phone)
+fc_cor <- cor.test(wide_data$FC_pc, wide_data$FC_phone)
+clr_cor <- cor.test(wide_data$CLR_pc, wide_data$CLR_phone)
 
 # Create a data frame to store the results
 correlations <- data.frame(
@@ -355,8 +463,5 @@ ggplot(correlations, aes(x = variable, y = correlation)) +
        y = "Pearson Correlation") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-
-
 ```
 
